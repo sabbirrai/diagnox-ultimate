@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -9,9 +9,8 @@ import uvicorn
 import json
 import random
 from typing import Optional
-from datetime import datetime
 
-app = FastAPI(title="Diagnox Pro", description="World's Most Advanced AI Medical Platform")
+app = FastAPI(title="Diagnox Pro")
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,18 +20,13 @@ app.add_middleware(
 )
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
-uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(static_dir, exist_ok=True)
-os.makedirs(uploads_dir, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
-app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
-# API Key from environment variable - NO HARDCODED KEY
+# API Key from environment variable
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 
-DIVISIONS = ["Dhaka", "Rajshahi", "Chattogram", "Khulna", "Sylhet", "Barishal", "Rangpur", "Mymensingh", 
-             "Cox's Bazar", "Comilla", "Narayanganj", "Gazipur", "Tangail", "Jessore", "Bogra", "Dinajpur",
-             "Pabna", "Noakhali", "Feni", "Kushtia", "Satkhira"]
+DIVISIONS = ["Dhaka", "Rajshahi", "Chattogram", "Khulna", "Sylhet", "Barishal", "Rangpur", "Mymensingh"]
 
 class SymptomRequest(BaseModel):
     symptoms: str
@@ -78,101 +72,90 @@ def extract_json(text):
         pass
     return None
 
+@app.get("/")
+async def root():
+    index_path = os.path.join(static_dir, "index.html")
+    if not os.path.exists(index_path):
+        # Create a simple HTML file dynamically
+        with open(index_path, "w", encoding="utf-8") as f:
+            f.write("""<!DOCTYPE html>
+<html>
+<head><title>Diagnox Pro</title><meta charset="UTF-8"></head>
+<body style="font-family: sans-serif; text-align: center; padding: 50px;">
+<h1>🏥 DIAGNOX PRO</h1>
+<p>World's Most Advanced AI Medical Platform</p>
+<textarea id="symptoms" rows="4" style="width:80%%; padding:10px;" placeholder="Describe your symptoms..."></textarea><br>
+<select id="division"><option>Dhaka</option><option>Rajshahi</option><option>Chattogram</option></select><br>
+<button onclick="analyze()">Start AI Diagnosis</button>
+<div id="result"></div>
+<script>
+async function analyze(){
+    let s=document.getElementById('symptoms').value;
+    let l=document.getElementById('division').value;
+    let r=document.getElementById('result');
+    r.innerHTML='<p>AI analyzing...</p>';
+    let res=await fetch('/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symptoms:s,location:l,language:'en'})});
+    let d=await res.json();
+    if(d.success){
+        r.innerHTML='<h3>'+d.response.primary_disease.name+'</h3><p>'+d.response.primary_disease.clinical_reasoning+'</p><p><strong>Severity:</strong> '+d.response.severity+'</p><p><strong>Emergency Risk:</strong> '+d.response.emergency_risk+'</p><p><strong>Medicine:</strong> '+d.response.medicine+'</p>';
+        loadDocs(l,d.response.primary_disease.name);
+    }
+}
+async function loadDocs(loc,dis){
+    let res=await fetch('/get-doctors',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:loc,disease_name:dis})});
+    let d=await res.json();
+    let html='<h3>Doctors</h3>';
+    d.doctors.forEach(doc=>{html+='<div style="border:1px solid #ccc; margin:10px; padding:10px;"><b>'+doc.name+'</b><br>'+doc.specialty+'<br>'+doc.hospital+'<br>'+doc.address+'<br>Fee: '+doc.fee+'<br>'+doc.contact+'</div>';});
+    r.innerHTML+=html;
+}
+</script>
+<p style="margin-top:50px;">⚠️ Consult a doctor for medical advice</p>
+</body>
+</html>""")
+    return FileResponse(index_path)
+
+@app.get("/divisions")
+async def get_divisions():
+    return {"divisions": DIVISIONS}
+
 @app.post("/analyze")
 async def analyze(req: SymptomRequest):
     duration_text = f"{req.duration_value} {req.duration_unit}" if req.duration_value else "Not specified"
     
-    if req.language == "bn":
-        lang_text = """তুমি একজন বিশ্বমানের AI ডাক্তার। তুমি পৃথিবীর যেকোনো রোগ নির্ণয় করতে পারো।
-শুধুমাত্র বাংলা ভাষায় উত্তর দাও। কোনো প্রি-ডিফাইন্ড ডাটা ব্যবহার করবে না।
-শুধু রোগীর বর্ণিত উপসর্গের ভিত্তিতে বাস্তবসম্মত বিশ্লেষণ দাও।"""
-    else:
-        lang_text = """You are a world-class AI doctor. You can diagnose ANY disease in the world.
-Do NOT use any predefined data. Analyze based ONLY on patient's described symptoms.
-Give professional, realistic medical analysis."""
-    
-    prompt = f"""{lang_text}
+    prompt = f"""You are an AI doctor. Diagnose based ONLY on these symptoms. NO predefined data.
+Symptoms: {req.symptoms}
+Age: {req.age if req.age else 'Unknown'}
+Duration: {duration_text}
+Location: {req.location if req.location else 'Bangladesh'}
 
-PATIENT:
-- Symptoms: {req.symptoms}
-- Age: {req.age if req.age else 'Not specified'}
-- Gender: {req.gender if req.gender else 'Not specified'}
-- Duration: {duration_text}
-- Location: {req.location if req.location else 'Bangladesh'}
-
-Provide diagnosis in EXACT JSON format:
-
+Return ONLY JSON:
 {{
-    "primary_disease": {{
-        "name": "disease name",
-        "confidence_label": "High/Moderate/Low",
-        "confidence_score": 85,
-        "match_score": 8,
-        "clinical_reasoning": "detailed medical reasoning"
-    }},
-    "alternative_diseases": [
-        {{"name": "alternative 1", "confidence_label": "Moderate", "confidence_score": 65}},
-        {{"name": "alternative 2", "confidence_label": "Low", "confidence_score": 45}}
-    ],
+    "primary_disease": {{"name": "disease name", "confidence_label": "High", "clinical_reasoning": "why this matches"}},
     "severity": "Mild/Moderate/Severe",
-    "severity_description": "description",
-    "severity_percentage": 65,
     "emergency_risk": "Low/Medium/High",
-    "matched_symptoms": ["symptom1", "symptom2"],
-    "missing_symptoms": ["symptom1", "symptom2"],
-    "action_items": ["action1", "action2", "action3"],
     "medicine": "medicine advice with disclaimer",
     "doctor_specialty": "specialist type",
-    "emergency_warning": "critical warning signs",
-    "home_remedy": "home care",
-    "recommended_tests": ["test1", "test2"],
-    "simple_explanation": "easy explanation",
-    "follow_up_questions": ["question1", "question2"],
-    "precautions": ["precaution1", "precaution2"],
-    "diet": "diet advice",
-    "recovery_time": "expected recovery"
+    "home_remedy": "home care advice"
 }}"""
 
     ai_response = call_ai(prompt)
     if ai_response:
         parsed = extract_json(ai_response)
         if parsed:
-            severity_pct = parsed.get("severity_percentage", 50)
-            health_score = max(30, min(100, 100 - int(severity_pct)))
-            parsed["health_score"] = health_score
             return {"success": True, "response": parsed}
     
-    return {"success": False, "error": "Please provide more detailed symptoms."}
+    return {"success": False, "error": "Please provide more details."}
 
 @app.post("/get-doctors")
 async def get_doctors(req: dict):
     location = req.get("location", "Dhaka")
     disease_name = req.get("disease_name", "")
-    doctor_specialty = req.get("doctor_specialty", "General Physician")
-    language = req.get("language", "en")
     
-    if language == "bn":
-        lang_text = f"{location}, বাংলাদেশের {disease_name} রোগের জন্য ৪ জন ডাক্তারের তথ্য দাও। বাস্তবসম্মত তথ্য দাও।"
-    else:
-        lang_text = f"Recommend 4 doctors in {location}, Bangladesh for {disease_name}. Give realistic information."
-    
-    prompt = f"""{lang_text}
-
-Return JSON:
+    prompt = f"""Recommend 4 realistic doctors in {location}, Bangladesh for {disease_name}.
+Return ONLY JSON:
 {{
     "doctors": [
-        {{
-            "name": "Dr. Name",
-            "specialty": "{doctor_specialty}",
-            "hospital": "Hospital in {location}",
-            "address": "Address in {location}",
-            "fee": "fee BDT",
-            "contact": "phone",
-            "available": "days time",
-            "experience": "years",
-            "rating": "4.5",
-            "qualification": "MBBS"
-        }}
+        {{"name": "Dr. Name", "specialty": "Specialty", "hospital": "Hospital in {location}", "address": "Address", "fee": "fee BDT", "contact": "phone", "available": "time", "experience": "years", "rating": "4.5"}}
     ]
 }}"""
 
@@ -184,13 +167,6 @@ Return JSON:
     
     return {"doctors": []}
 
-@app.get("/divisions")
-async def get_divisions():
-    return {"divisions": DIVISIONS}
-
-@app.get("/")
-async def root():
-    return FileResponse(os.path.join(static_dir, "index.html"))
-
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
